@@ -1,100 +1,76 @@
-from telegram.ext import *
-from io import BytesIO
-
-import cv2
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import numpy as np
 import tensorflow as tf
-import os
+from tensorflow.keras.datasets import cifar10
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
+import cv2
+from io import BytesIO
 
-from dotenv import load_dotenv
+# Load CIFAR-10 dataset
+(x_train, y_train), (x_test, y_test) = cifar10.load_data()
+x_train, x_test = x_train / 255.0, x_test / 255.0
 
-
-load_dotenv(override=True)
-
-TOKEN = os.getenv("API_KEY")
-
-
-(x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-x_train, x_test = x_train / 255, x_test / 255
-
+# Define class names for CIFAR-10
 class_names = [
-    "Plane",
-    "Car",
-    "Bird",
-    "Cat",
-    "Deer",
-    "Dog",
-    "Frog",
-    "Horse",
-    "Ship",
-    "Truck",
+    "Plane", "Car", "Bird", "Cat", "Deer", "Dog", "Frog", "Horse", "Ship", "Truck"
 ]
 
-model = tf.keras.models.Sequential()
-model.add(
-    tf.keras.layers.Conv2D(32, (3, 3), activation="relu", input_shape=(32, 32, 3))
-)
-model.add(tf.keras.layers.MaxPooling2D((2, 2)))
-model.add(tf.keras.layers.Conv2D(64, (3, 3), activation="relu"))
-model.add(tf.keras.layers.MaxPooling2D((2, 2)))
-model.add(tf.keras.layers.Conv2D(64, (3, 3), activation="relu"))
-model.add(tf.keras.layers.Flatten())
-model.add(tf.keras.layers.Dense(64, activation="relu"))
-model.add(tf.keras.layers.Dense(10, activation="softmax"))
+# Build the model
+model = Sequential([
+    Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)),
+    MaxPooling2D((2, 2)),
+    Conv2D(64, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Conv2D(64, (3, 3), activation='relu'),
+    Flatten(),
+    Dense(64, activation='relu'),
+    Dense(10, activation='softmax')
+])
 
-
-def start(update, context):
-    update.message.reply_text("Welcome!")
-
-
-def help(update, context):
-    update.message.reply(
-        """
-    /start - Start conversation
-    /help - Shows this messege 
-    /train - Trains nueral network 
-    """
+# Async function to start the bot and display a welcome message
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Welcome to the Image Classification Bot. Send /train to train the model or just send an image to classify."
     )
 
-
-def train(update, context):
-    update.message.reply_text("Model is beign trained...")
-    model.compile(
-        optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
-    )
+# Async function to train the model
+async def train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Training the model, please wait...")
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     model.fit(x_train, y_train, epochs=10, validation_data=(x_test, y_test))
-    model.save("cifar_classifier.model")
-    update.message.reply_text("Please train the model and send a picture!")
+    model.save('cifar_classifier.h5')  # Save the model in H5 format
+    await update.message.reply_text("Model trained and saved!")
+    
+    category_message = "You can now send me photos from the following categories for recognition:\n- Plane\n- Car\n- Bird\n- Cat\n- Deer\n- Dog\n- Frog\n- Horse\n- Ship\n- Truck"
+    await update.message.reply_text(category_message)
 
+# Async function to handle received photos
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    photo_file = await update.message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+    image_stream = BytesIO(photo_bytes)
+    image = np.asarray(bytearray(image_stream.read()), dtype=np.uint8)
+    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = cv2.resize(image, (32, 32), interpolation=cv2.INTER_AREA)
 
-def handle_message(update, context):
-    update.message.reply_text("Please train the model and send a picture!")
+    # Load model for inference
+    loaded_model = tf.keras.models.load_model('cifar_classifier.h5')
+    prediction = loaded_model.predict(np.array([image / 255.0]))
+    predicted_class = class_names[np.argmax(prediction)]
+    await update.message.reply_text(f"In this image, I see a {predicted_class}.")
 
+# Main function to run the bot
+def main() -> None:
+    application = Application.builder().token("5657338884:AAGcpZXSZ7uS1HfpYEdS7E5-MW0Q720UzIs").build()
 
-def handle_photo(update, context):
-    file = context.bot.get_file(update.message.photo[-1].file_id)
-    f = BytesIO(file.download_as_bytearray())
-    file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("train", train))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    img = cv2.resize(img, (32, 32), interpolation=cv2.INTER_AREA)
-
-    prediction = model.predict(np.array([img / 255]))
-    update.message.reply_text(
-        f"In this image I see a {class_names[np.argmax(prediction)]}"
-    )
-
+    application.run_polling()
 
 if __name__ == "__main__":
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help))
-    dp.add_handler(CommandHandler("train", train))
-    dp.add_handler(MessageHandler(Filters.text, handle_message))
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
-
-    updater.start_polling()
-    updater.idle()
+    main()
